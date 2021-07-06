@@ -1,0 +1,21 @@
+#! /bin/sh
+if [ $# -ne 3 ];
+then
+        echo "Fail\nPlease input like: ./compile_file [file_name] [need_dir] [file_dir]"
+else
+	. ../../compile.config
+        cp ../file/file.c .
+        cp ../file/Makefile .
+        sed -e "s/abc/$1/" -i file.c
+        sed -e "s/need_dir = 0/need_dir = $2/" -i file.c
+	sed -e "s/defgh/$3/" -i file.c
+        mv file.c $1_file.c
+        sed -e "s/newdev/$1_file/" -i Makefile
+        sed -e "s/arch/$_arch/" -i Makefile
+	escape_root_dir=$(printf '%s\n' "$root_dir" | sed -e 's/[\/&]/\\&/g')
+	sed -e "s/cross_compiler/$escape_root_dir\/toolchain\/$_arch_dir\/$header_version\/usr\/bin\/$cross_compiler/" -i Makefile
+        make -j8 >/dev/null 2>&1
+        rm -rf *.symvers *.order *.o *.c Makefile .*.o.cmd .*.mod.o.cmd .*.ko.cmd .*.tmp .tmp_versions .*.mod.cmd >/dev/null 2>&1
+        mv *.ko ../file_ko/
+fi
+

@@ -1,0 +1,5 @@
+#! /bin/sh
+sudo ln -s /usr/lib/x86_64-linux-gnu/libmpfr.so.6 /usr/lib/x86_64-linux-gnu/libmpfr.so.4
+sudo apt-get install -y libssl-dev
+sudo apt-get install -y texinfo
+sudo apt-get install -y make

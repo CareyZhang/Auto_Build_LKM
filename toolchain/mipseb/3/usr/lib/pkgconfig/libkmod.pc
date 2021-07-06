@@ -1,0 +1,11 @@
+prefix=/home/ubuntu/my/buildroot/output/host/usr
+exec_prefix=/home/ubuntu/my/buildroot/output/host/usr
+libdir=/home/ubuntu/my/buildroot/output/host/usr/lib
+includedir=/home/ubuntu/my/buildroot/output/host/usr/include
+
+Name: libkmod
+Description: Library to deal with kernel modules
+Version: 22
+Libs: -L${libdir} -lkmod
+Libs.private:  
+Cflags: -I${includedir}

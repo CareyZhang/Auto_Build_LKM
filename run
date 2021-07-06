@@ -1,0 +1,396 @@
+#! /bin/sh
+set -x
+bigVersion=""
+medVersion=""
+okToCompileKernelModule=false
+if [ -f ./deploy -a -f ./run ];
+then
+    if [ $# -ne 2 ];
+    then
+        echo "Fail\nPlease input like: ./run [Architecture] [kernel version]"
+        echo "for example : ./run armel 3.18.20"
+    else
+        bigVersion=$(echo "$2" | cut -d "." -f 1)
+        medVersion=$(echo "$2" | cut -d "." -f 2)
+
+        if [ $1 = "armel" ];then
+            if [ $bigVersion -le 1 ];then
+                echo "Sorry, this kernel version compile failed!!"
+                exit 0
+            fi
+        fi
+
+        if [ $1 = "mipsel" ] || [ $1 = "mipseb" ];then
+            if [ $bigVersion -le 2 -a $medVersion -le 5 ];then
+                echo "Sorry, this kernel version compile failed!!"
+                exit 0
+            fi
+        fi
+
+        ROOT_DIR=`pwd`
+        COMPILE_KERNEL_DIR="$ROOT_DIR/kernel/$1/$2"
+        if [ ! -d $COMPILE_KERNEL_DIR ];then
+            mkdir -p $COMPILE_KERNEL_DIR
+            mkdir -p $COMPILE_KERNEL_DIR/kernel_module/md_ko
+            mkdir -p $COMPILE_KERNEL_DIR/kernel_module/file_ko
+            mkdir -p $COMPILE_KERNEL_DIR/kernel_module
+            cp -r $ROOT_DIR/script $COMPILE_KERNEL_DIR/kernel_module
+            cp -r $ROOT_DIR/file $COMPILE_KERNEL_DIR/kernel_module
+        fi
+
+        if [ -e "$COMPILE_KERNEL_DIR/fail" ];then
+            echo "Sorry, this kernel version compile failed!!"
+            exit 0
+        fi
+
+        while [ -e "$COMPILE_KERNEL_DIR/sync" ];
+        do
+            echo "Waiting..."
+            sleep 1
+        done
+
+        if [ -e "$COMPILE_KERNEL_DIR/fail" ];then
+            echo "Sorry, this kernel version compile failed!!"
+            exit 0
+        fi
+
+        touch "$COMPILE_KERNEL_DIR/sync"
+        cp file/compile.config $COMPILE_KERNEL_DIR
+        
+        if [ $bigVersion -eq 5 ] || [ $bigVersion -eq 4 -a $medVersion -ge 9 ];
+        then
+            version=4
+        elif [ $bigVersion -eq 4 ] || [ $bigVersion -eq 3 -a $medVersion -ge 6 ];
+        then
+            version=3
+        else
+            version=2
+        fi
+
+        sed -e "s/headerversion/$version/" -i $COMPILE_KERNEL_DIR/compile.config
+        if [ -e $COMPILE_KERNEL_DIR/zImage ] || [ -e $COMPILE_KERNEL_DIR/vmlinux ];
+        then
+            case "$1" in
+                armel)
+                    sed -e "s/archdir/arm/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/arm/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/arm-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "\nroot_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    okToCompileKernelModule=true
+                ;;
+                mipseb)
+                    sed -e "s/archdir/mipseb/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/mips/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/mips-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "\nroot_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    okToCompileKernelModule=true
+                ;;
+                mipsel)
+                    sed -e "s/archdir/mipsel/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/mips/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/mipsel-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "\nroot_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    okToCompileKernelModule=true
+                ;;
+                *)
+                    echo "Sorry, this arch compile failed, please read README.md !!"
+                ;;
+            esac
+        else
+            cd $COMPILE_KERNEL_DIR
+
+            if [ $bigVersion -le 2 ];
+            then
+                wget https://mirrors.edge.kernel.org/pub/linux/kernel/v$bigVersion.$medVersion/linux-$2.tar.gz
+            else
+                if [[ $2 == *"3.0."* ]]; then
+                    wget https://mirrors.edge.kernel.org/pub/linux/kernel/v3.0/linux-$2.tar.gz
+                else
+                    wget https://mirrors.edge.kernel.org/pub/linux/kernel/v$bigVersion.x/linux-$2.tar.gz
+                fi
+            fi
+            tar zxvf linux-$2.tar.gz
+            mv linux-$2/ linux/
+
+            # Patch kernel
+            echo "[*] Patch kernel!!!"
+            if [ ! -d $COMPILE_KERNEL_DIR/linux/drivers/firmadyne ]; then
+                if [ $bigVersion -le 3 ]; then
+                    cp -r $ROOT_DIR/firmadyne/2/ $COMPILE_KERNEL_DIR/linux/drivers/firmadyne
+                else
+                    cp -r $ROOT_DIR/firmadyne/4/ $COMPILE_KERNEL_DIR/linux/drivers/firmadyne
+                fi
+                sed '/menu "Device Drivers"/s/$/\n\nsource "drivers\/firmadyne\/Kconfig"/' -i $COMPILE_KERNEL_DIR/linux/drivers/Kconfig
+                echo "obj-\$(CONFIG_FIRMADYNE)         += firmadyne/" >> $COMPILE_KERNEL_DIR/linux/drivers/Makefile
+                sed 's/\#obj-\$(CONFIG_KPROBES)/obj-$(CONFIG_KPROBES)/' -i $COMPILE_KERNEL_DIR/linux/arch/mips/Makefile
+                sed "s/AMA/S/g" -i `find . -name amba-pl011.c`
+                sed "s/204/TTY_MAJOR/" -i `find . -name amba-pl011.c`
+                sed "/#include <linux\/module.h>/s/$/\n#include <linux\/major.h>/" -i `find . -name amba-pl011.c`
+                sed 's/{ "HOME=\/", "TERM=linux", NULL, }/{ "HOME=\/", "TERM=linux", "LD_PRELOAD=\/firmadyne\/libnvram_ioctl.so:\/firmadyne\/hook.so", NULL, }/' -i $COMPILE_KERNEL_DIR/linux/init/main.c
+            fi
+            cp $ROOT_DIR/patch/smp_patch $COMPILE_KERNEL_DIR/linux/
+            cd $COMPILE_KERNEL_DIR/linux/
+            sed -e "s/-Werror-implicit-function-declaration/ \nKBUILD_CFLAGS += \$(call cc-option,-Wno-error=unused-but-set-variable,)/" -i Makefile
+            if [ -f ./kernel/timeconst.pl ];
+            then
+                sed -e "s/(!defined(@val))/(!@val)/" -i ./kernel/timeconst.pl
+            fi
+            # Set Kernel Config
+            echo "[*] Set Kernel Config!!!"
+            case "$1" in
+                armel)
+                    if [ $bigVersion -le 2 ];then
+                       patch -p0 < smp_patch
+                    fi
+                    if [ $bigVersion -le 3 ] && [ $medVersion -le 10 ];
+                    then
+                        echo "CONFIG_MODULE_FORCE_LOAD=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_MODULE_UNLOAD=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_MODULES_USE_ELF_REL=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_TMPFS=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BINFMT_ELF=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BINFMT_SCRIPT=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BINFMT_MISC=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_NVRAM=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_E1000=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_IP_NF_FILTER=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_IP_NF_IPTABLES=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_AH=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_ESP=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_IPCOMP=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_XFRM_TUNNEL=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_TUNNEL=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_TRANSPORT=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_TUNNEL=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_BEET=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_LRO=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_DIAG=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET_TCP_DIAG=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_IPV6=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_INET6_AH=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_ESP=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_TRANSPORT=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_BEET=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_PCI=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_FIRMADYNE=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_KPROBES=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BRIDGE=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_NETFILTER=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BRIDGE_NF_EBTABLES=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_BRIDGE_EBT_VLAN=y"	>> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_VLAN_8021Q=y" >> arch/arm/configs/versatile_defconfig
+                        sed "s/CONFIG_MMC_ARMMMCI=m/CONFIG_MMC_ARMMMCI=y/" -i arch/arm/configs/versatile_defconfig
+                        sed "s/CONFIG_ARCH_VERSATILE=y/CONFIG_ARCH_VERSATILE=n/" -i arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_ARCH_VEXPRESS=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_ARCH_VEXPRESS_CA9X4=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_SMP=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_OF=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_AEABI=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_MMC_SDHCI=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_MMC_SDHCI_PLTFM=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_SMSC911X=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_SMC911X=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_CHR_DEV_SG=y" >> arch/arm/configs/versatile_defconfig
+                        echo "CONFIG_HAVE_ARM_TWD=y" >> arch/arm/configs/versatile_defconfig
+                        make -j8 ARCH=arm CROSS_COMPILE=$ROOT_DIR/toolchain/arm/$version/usr/bin/arm-linux- versatile_defconfig #qemu-system-arm -M versatilepb
+                    else
+                        echo "CONFIG_MODULE_FORCE_LOAD=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_MODULE_UNLOAD=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_MODULES_USE_ELF_REL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_HAVE_SYSCALL_TRACEPOINTS=y"  >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_TMPFS=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BINFMT_ELF=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BINFMT_SCRIPT=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BINFMT_MISC=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_NVRAM=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_PCI=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_E1000=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_IP_NF_FILTER=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_IP_NF_IPTABLES=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_AH=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_ESP=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_IPCOMP=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_XFRM_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_TRANSPORT=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_XFRM_MODE_BEET=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_LRO=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_DIAG=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET_TCP_DIAG=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_IPV6=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_AH=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_ESP=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_TRANSPORT=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_INET6_XFRM_MODE_BEET=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_FIRMADYNE=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_KPROBES=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BRIDGE=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_NETFILTER=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BRIDGE_NF_EBTABLES=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_BRIDGE_EBT_VLAN=y" >> arch/arm/configs/vexpress_defconfig
+                        echo "CONFIG_VLAN_8021Q=y" >> arch/arm/configs/vexpress_defconfig
+                        make -j8 ARCH=arm CROSS_COMPILE=$ROOT_DIR/toolchain/arm/$version/usr/bin/arm-linux- vexpress_defconfig
+                    fi
+                    if [ -n "${FIRMSE_DOCKER-}" ]; then
+                        export LD_LIBRARY_PATH=$ROOT_DIR/toolchain/arm/$version/usr/lib/:$LD_LIBRARY_PATH
+                    fi
+                    make -j8 ARCH=arm CROSS_COMPILE=$ROOT_DIR/toolchain/arm/$version/usr/bin/arm-linux-
+                    if [ -f ./arch/arm/boot/zImage ];
+                    then
+                        cp arch/arm/boot/zImage ../
+                        okToCompileKernelModule=true
+                    else
+                        echo "Sorry, this kernel version compile failed!!"
+                        okToCompileKernelModule=false
+                    fi
+                    cd $ROOT_DIR
+                    sed -e "s/archdir/arm/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/arm/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/arm-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "root_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    ;;
+                mipseb)
+                    echo "CONFIG_MODULE_FORCE_LOAD=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_MODULE_UNLOAD=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_MODULES_USE_ELF_REL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_TMPFS=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_ELF=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_SCRIPT=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_MISC=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_PCI=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_E1000=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_IP_NF_FILTER=m/CONFIG_IP_NF_FILTER=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_IP_NF_IPTABLES=m/CONFIG_IP_NF_IPTABLES=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_AH=m/CONFIG_INET_AH=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_ESP=m/CONFIG_INET_ESP=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_IPCOMP=m/CONFIG_INET_IPCOMP=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_XFRM_MODE_TUNNEL=m/CONFIG_INET_XFRM_MODE_TUNNEL=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_XFRM_MODE_TRANSPORT=m/CONFIG_INET_XFRM_MODE_TRANSPORT=y/" -i arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_XFRM_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_XFRM_MODE_BEET=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_LRO=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_DIAG=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_TCP_DIAG=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_AH=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_ESP=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_TRANSPORT=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_BEET=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_FIRMADYNE=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_CPU_BIG_ENDIAN=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_KPROBES=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_HAVE_KPROBES=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_CPU_LITTLE_ENDIAN=y/CONFIG_CPU_LITTLE_ENDIAN=n/" -i arch/mips/configs/malta_defconfig
+                    echo "CONFIG_IPV6=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_LLC=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_STP=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE=m/CONFIG_BRIDGE=y/" -i arch/mips/configs/malta_defconfig
+                    echo "CONFIG_NETFILTER=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE_NF_EBTABLES=m/CONFIG_BRIDGE_NF_EBTABLES=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE_EBT_VLAN=m/CONFIG_BRIDGE_EBT_VLAN=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_VLAN_8021Q=m/CONFIG_VLAN_8021Q=y/" -i arch/mips/configs/malta_defconfig
+                    make -j8 ARCH=mips CROSS_COMPILE=$ROOT_DIR/toolchain/mipseb/$version/usr/bin/mips-linux- malta_defconfig
+                    if [ -n "${FIRMSE_DOCKER-}" ]; then
+                        export LD_LIBRARY_PATH=$ROOT_DIR/toolchain/mipseb/$version/usr/lib/:$LD_LIBRARY_PATH
+                    fi
+                    make -j8 ARCH=mips CROSS_COMPILE=$ROOT_DIR/toolchain/mipseb/$version/usr/bin/mips-linux-
+                    if [ -f ./vmlinux ];
+                    then
+                        cp vmlinux ../
+                        okToCompileKernelModule=true
+                    else
+                        echo "Sorry, this kernel version compile failed!!"
+                        okToCompileKernelModule=false
+                    fi
+                    cd $ROOT_DIR
+                    sed -e "s/archdir/mipseb/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/mips/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/mips-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "root_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    ;;
+                mipsel)
+                    echo "CONFIG_MODULE_FORCE_LOAD=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_MODULE_UNLOAD=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_MODULES_USE_ELF_REL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_TMPFS=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_ELF=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_SCRIPT=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_BINFMT_MISC=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_PCI=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_E1000=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_IP_NF_FILTER=m/CONFIG_IP_NF_FILTER=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_IP_NF_IPTABLES=m/CONFIG_IP_NF_IPTABLES=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_AH=m/CONFIG_INET_AH=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_ESP=m/CONFIG_INET_ESP=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_IPCOMP=m/CONFIG_INET_IPCOMP=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_XFRM_MODE_TUNNEL=m/CONFIG_INET_XFRM_MODE_TUNNEL=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_INET_XFRM_MODE_TRANSPORT=m/CONFIG_INET_XFRM_MODE_TRANSPORT=y/" -i arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_XFRM_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_XFRM_MODE_BEET=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_LRO=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_DIAG=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET_TCP_DIAG=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_AH=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_ESP=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_TRANSPORT=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_TUNNEL=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_INET6_XFRM_MODE_BEET=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_FIRMADYNE=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_HAVE_KPROBES=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_KPROBES=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_IPV6=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_LLC=y" >> arch/mips/configs/malta_defconfig
+                    echo "CONFIG_STP=y" >> arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE=m/CONFIG_BRIDGE=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE_NF_EBTABLES=m/CONFIG_BRIDGE_NF_EBTABLES=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_BRIDGE_EBT_VLAN=m/CONFIG_BRIDGE_EBT_VLAN=y/" -i arch/mips/configs/malta_defconfig
+                    sed -e "s/CONFIG_VLAN_8021Q=m/CONFIG_VLAN_8021Q=y/" -i arch/mips/configs/malta_defconfig
+                    make -j8 ARCH=mips CROSS_COMPILE=$ROOT_DIR/toolchain/mipsel/$version/usr/bin/mipsel-linux- malta_defconfig
+                    if [ -n "${FIRMSE_DOCKER-}" ]; then
+                        export LD_LIBRARY_PATH=$ROOT_DIR/toolchain/mipsel/$version/usr/lib/:$LD_LIBRARY_PATH
+                    fi
+                    make -j8 ARCH=mips CROSS_COMPILE=$ROOT_DIR/toolchain/mipsel/$version/usr/bin/mipsel-linux-
+                    if [ -f ./vmlinux ];
+                    then
+                        cp vmlinux ../
+                        okToCompileKernelModule=true
+                    else
+                        echo "Sorry, this kernel version compile failed!!"
+                        okToCompileKernelModule=false
+                    fi
+                    cd $ROOT_DIR
+                    sed -e "s/archdir/mipsel/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/compilearch/mips/" -i $COMPILE_KERNEL_DIR/compile.config
+                    sed -e "s/crosscompiler/mipsel-linux-/" -i $COMPILE_KERNEL_DIR/compile.config
+                    echo "root_dir=$ROOT_DIR" >> $COMPILE_KERNEL_DIR/compile.config
+                    ;;
+                *)
+                    echo "Sorry, this arch compile failed, please read README.md !!"
+                    ;;
+            esac
+        fi
+        cd $COMPILE_KERNEL_DIR/kernel_module/script
+        if [ "$okToCompileKernelModule" = true ];
+        then
+            ./build_all_module
+            echo "kernel in kernel/"
+            echo "build successful!!"
+            rm $COMPILE_KERNEL_DIR/sync
+        else
+            #rm -r $COMPILE_KERNEL_DIR
+            mkdir -p $COMPILE_KERNEL_DIR
+            touch $COMPILE_KERNEL_DIR/fail
+        fi
+    fi
+else
+    echo "Fail\nPlease execute run in project directory"
+fi

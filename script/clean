@@ -1,0 +1,7 @@
+#!/bin/sh
+rm -rf ../md_ko/*
+rm -rf ../file_ko/*
+rm -rf ../kernel/*
+rm -rf ../build-systemtap
+rm -rf ../systemtap-4.4
+rm ./compile.config
