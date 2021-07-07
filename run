@@ -68,6 +68,7 @@ then
         fi
 
         sed -e "s/headerversion/$version/" -i $COMPILE_KERNEL_DIR/compile.config
+        sed -e "s/kernelversion/$2/" -i $COMPILE_KERNEL_DIR/compile.config
         if [ -e $COMPILE_KERNEL_DIR/zImage ] || [ -e $COMPILE_KERNEL_DIR/vmlinux ];
         then
             case "$1" in

@@ -4,7 +4,11 @@ then
 	echo "Fail\nPlease input like: ./compile_newdev [device_name]"
 else
 	. ../../compile.config
-	cp ../file/newdev.c .
+	if [ `echo $kernel_version | cut -d '.' -f1` -eq 2 ]; then
+		cp ../file/newdev_2.c newdev.c
+	else
+		cp ../file/newdev_3_4.c newdev.c
+	fi
 	cp ../file/Makefile .
 	sed -e "s/firmadyne_newdev/$1/" -i newdev.c
 	mv newdev.c $1.c
