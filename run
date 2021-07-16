@@ -175,7 +175,7 @@ then
                         echo "CONFIG_INET6_XFRM_MODE_TUNNEL=y" >> arch/arm/configs/vexpress_defconfig
                         echo "CONFIG_INET6_XFRM_MODE_BEET=y" >> arch/arm/configs/vexpress_defconfig
                         echo "CONFIG_PCI=y" >> arch/arm/configs/versatile_defconfig
-                        echo "CONFIG_FIRMADYNE=y" >> arch/arm/configs/versatile_defconfig
+                        #echo "CONFIG_FIRMADYNE=y" >> arch/arm/configs/versatile_defconfig
                         echo "CONFIG_KPROBES=y" >> arch/arm/configs/versatile_defconfig
                         echo "CONFIG_BRIDGE=y" >> arch/arm/configs/versatile_defconfig
                         echo "CONFIG_NETFILTER=y" >> arch/arm/configs/versatile_defconfig
